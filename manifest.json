@@ -1,0 +1,22 @@
+
+{
+  "name": "ThaiSight AI",
+  "short_name": "ThaiSight",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#D6C3CE",
+  "theme_color": "#2563EB",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://api.dicebear.com/7.x/bottts/png?seed=ThaiSight&backgroundColor=2563EB",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://api.dicebear.com/7.x/bottts/png?seed=ThaiSight&backgroundColor=2563EB",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
