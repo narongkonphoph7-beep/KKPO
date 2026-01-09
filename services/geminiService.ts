@@ -19,16 +19,16 @@ export interface FileData {
 export const performOCRAndSummarize = async (files: FileData[]): Promise<{ original: string; summary: string }> => {
   const ai = getGeminiClient();
   
+  // Concise prompt for faster processing
   const prompt = `
-    Please act as a Thai language expert.
-    1. Extract all text from these files (OCR). These files are pages of the same document or related content (can be images or PDFs). Combine the text logically. Fix any obvious spelling mistakes or OCR errors to ensure the text is clean.
-    2. Summarize the content of the entire document into a concise, easy-to-understand "story" format in Thai. 
-    Focus on key points and takeaways.
+    Task: Thai Document Analysis.
+    1. Extract ALL text from the provided images/PDFs (OCR). Combine logically.
+    2. Summarize the content into a cohesive, easy-to-understand "Story" in THAI language.
     
-    Return the response in exactly this JSON format:
+    Output strictly in this JSON format:
     {
-      "originalText": "The full cleaned text from all files here",
-      "summary": "The concise summary here"
+      "originalText": "All extracted text here...",
+      "summary": "Thai summary story here..."
     }
   `;
 
@@ -37,46 +37,61 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
     inlineData: { mimeType: file.mimeType, data: file.base64 }
   }));
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: {
-      parts: [
-        ...fileParts,
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json"
-    }
-  });
+  try {
+    const response = await ai.models.generateContent({
+      // USE GEMINI 2.0 FLASH for higher rate limits (1500 RPD) vs Gemini 3 (20 RPD)
+      model: 'gemini-2.0-flash-exp',
+      contents: {
+        parts: [
+          ...fileParts,
+          { text: prompt }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json"
+      }
+    });
 
-  const result = JSON.parse(response.text || '{}');
-  return {
-    original: result.originalText || '',
-    summary: result.summary || ''
-  };
+    const result = JSON.parse(response.text || '{}');
+    return {
+      original: result.originalText || '',
+      summary: result.summary || ''
+    };
+  } catch (error: any) {
+    if (error.status === 429 || error.message?.includes('429')) {
+      throw new Error("โควตาการใช้งานฟรีของวันนี้เต็มแล้ว (Limit Exceeded). กรุณารอ 1-2 นาทีแล้วลองใหม่ หรือเปลี่ยน API Key");
+    }
+    throw error;
+  }
 };
 
 export const generateThaiSpeech = async (text: string): Promise<string> => {
   const ai = getGeminiClient();
   
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-tts",
-    contents: [{ parts: [{ text: `โปรดอ่านสรุปต่อไปนี้ด้วยน้ำเสียงที่นุ่มนวลและเป็นธรรมชาติ: ${text}` }] }],
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Kore' },
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: `โปรดอ่านด้วยน้ำเสียงเล่าเรื่องที่น่าฟัง: ${text}` }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Kore' },
+          },
         },
       },
-    },
-  });
+    });
 
-  const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("Could not generate audio content");
-  
-  return base64Audio;
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) throw new Error("Could not generate audio content");
+    
+    return base64Audio;
+  } catch (error: any) {
+    if (error.status === 429 || error.message?.includes('429')) {
+      throw new Error("โควตาการสร้างเสียงเต็ม (TTS Limit). คุณยังสามารถอ่านบทสรุปได้");
+    }
+    throw error;
+  }
 };
 
 // Audio Utilities for raw PCM

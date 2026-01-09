@@ -52,6 +52,64 @@ const App: React.FC = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Helper: Compress Image before sending to AI
+  const compressFile = async (file: File): Promise<FileData> => {
+    // If PDF, return as is (base64)
+    if (file.type === 'application/pdf') {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            resolve({ 
+              base64: reader.result.split(',')[1], 
+              mimeType: file.type 
+            });
+          } else {
+            reject(new Error("Failed to read PDF"));
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // If Image, compress via Canvas
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Max width 1500px is sufficient for OCR
+          const MAX_WIDTH = 1500; 
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Compress to JPEG quality 0.7 (significant size reduction)
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          resolve({
+            base64: dataUrl.split(',')[1],
+            mimeType: 'image/jpeg'
+          });
+        };
+        img.onerror = (e) => reject(e);
+      };
+      reader.onerror = (e) => reject(e);
+    });
+  };
+
   const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
 
@@ -60,54 +118,51 @@ const App: React.FC = () => {
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.UPLOADING, 
-        progressMessage: `กำลังเตรียมความพร้อมของเอกสาร ${fileCount} ไฟล์...` 
+        progressMessage: `กำลังบีบอัดและอัปโหลด ${fileCount} ไฟล์ (โหมดเทอร์โบ)...` 
       }));
       
-      // Helper to read file as base64 and capture mime type
-      const readFileAsBase64 = (file: File): Promise<FileData> => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            if (typeof reader.result === 'string') {
-              const base64 = reader.result.split(',')[1];
-              resolve({ base64, mimeType: file.type });
-            } else {
-              reject(new Error("Failed to read file"));
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-      };
+      // Process files in parallel
+      const filesData = await Promise.all(selectedFiles.map(compressFile));
 
-      // Convert all files to base64 concurrently
-      const filesData = await Promise.all(selectedFiles.map(readFileAsBase64));
-
-      // STEP 1 & 2 & 3: OCR + Filter + Summarize (Combined in Gemini Prompt)
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `รอแปบนะน้อง AI กำลังถอดรหัสข้อความจากเอกสาร ${fileCount} ไฟล์` }));
+      // STEP 1 & 2 & 3: OCR + Filter + Summarize
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `AI กำลังอ่านและสรุปใจความอย่างรวดเร็ว...` }));
       const { original, summary } = await performOCRAndSummarize(filesData);
 
       // STEP 4: TTS
-      setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: 'สมองสรุปเสร็จแล้ว... กำลังเตรียมเสียงบรรยายให้น้องฟังนะ' }));
-      const audioBase64 = await generateThaiSpeech(summary);
+      setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: 'กำลังสร้างเสียงบรรยาย...' }));
+      let audioBase64;
+      try {
+        audioBase64 = await generateThaiSpeech(summary);
+      } catch (e) {
+        console.warn("TTS Failed, continuing with text only", e);
+        // If TTS fails (e.g. quota), we still show the summary
+        audioBase64 = null;
+      }
       
-      setAudioBlob(audioBase64);
+      setAudioBlob(audioBase64 || null);
       setState({
         status: AppStatus.COMPLETED,
         result: {
           originalText: original,
           summary: summary,
-          audioBase64: audioBase64
+          audioBase64: audioBase64 || undefined
         },
         error: null,
         progressMessage: 'เรียบร้อยแล้ว!'
       });
     } catch (err: any) {
       console.error(err);
+      
+      // Improve user experience for Quota errors
+      let errorMsg = err.message || 'เกิดข้อผิดพลาดบางอย่าง โปรดลองอีกครั้ง';
+      if (err.message?.includes('429') || err.message?.includes('Quota')) {
+        errorMsg = "⚠️ ใช้งานเกินโควตาประจำวันของ Google AI (ฟรี 1500 ครั้ง/วัน) โปรดรอสักครู่แล้วลองใหม่";
+      }
+
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.ERROR, 
-        error: err.message || 'เกิดข้อผิดพลาดบางอย่าง โปรดลองอีกครั้ง' 
+        error: errorMsg 
       }));
     }
   };
@@ -238,7 +293,7 @@ const App: React.FC = () => {
                     className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:shadow-2xl transform transition hover:-translate-y-1 active:scale-95 flex items-center space-x-3"
                   >
                     <span>⚡</span>
-                    <span>เสร็จสิ้น</span>
+                    <span>เริ่มประมวลผลด่วน</span>
                   </button>
                 </div>
               </div>
